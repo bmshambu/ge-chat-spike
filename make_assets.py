@@ -4,23 +4,64 @@ The probe bundles these files inside the agent package and sends them as data: U
 so no storage is involved. Synthetic data only — never point this at a client template.
 
     python make_assets.py
+
+Outputs:
+  assets/slide-01..09.jpg        the 9 library pages, 800 px
+  assets/tiny.png                slide 1 at 160 px
+  assets/deck60/slide-01..60.jpg the 9 pages cycled to 60, each stamped "N / 60" so order is checkable
+  assets/deck60/thumb-01..60.jpg the same at thumbnail size
 """
 from pathlib import Path
 
 import pypdfium2 as pdfium
+from PIL import ImageDraw, ImageFont
 
 PDF = Path(r"C:\GenAi_Prjcts\claude-cowork-demo\Templfy\proposal_builder\ppt_gen_v3\templates\demo\library.pdf")
 OUT = Path(__file__).parent / "agent" / "assets"
+DECK60 = OUT / "deck60"
 SLIDE_WIDTH = 800   # small enough that 9 slides stay well under ~1 MB of base64
 TINY_WIDTH = 160
+THUMB_WIDTH = 240
+DECK_SIZE = 60
+
+
+def _resize(img, width):
+    return img.resize((width, round(img.height * width / img.width)))
+
+
+def _badge(img, label):
+    """Stamp a dark 'N / 60' badge in the top-right corner."""
+    img = img.copy()
+    draw = ImageDraw.Draw(img)
+    font = ImageFont.load_default(size=30)
+    left, top, right, bottom = draw.textbbox((0, 0), label, font=font)
+    w, h = right - left + 28, bottom - top + 18
+    x, y = img.width - w - 16, 16
+    draw.rounded_rectangle((x, y, x + w, y + h), radius=10, fill=(20, 20, 20))
+    draw.text((x + 14 - left, y + 9 - top), label, font=font, fill=(255, 255, 255))
+    return img
+
 
 OUT.mkdir(parents=True, exist_ok=True)
-pdf = pdfium.PdfDocument(PDF)
-for i, page in enumerate(pdf, start=1):
+DECK60.mkdir(parents=True, exist_ok=True)
+pages = []
+for i, page in enumerate(pdfium.PdfDocument(PDF), start=1):
     img = page.render(scale=SLIDE_WIDTH / page.get_width()).to_pil().convert("RGB")
     img.save(OUT / f"slide-{i:02d}.jpg", quality=80, optimize=True)
     if i == 1:
-        img.resize((TINY_WIDTH, round(img.height * TINY_WIDTH / img.width))).save(OUT / "tiny.png", optimize=True)
+        _resize(img, TINY_WIDTH).save(OUT / "tiny.png", optimize=True)
+    pages.append(img)
 
-for f in sorted(OUT.iterdir()):
+for n in range(1, DECK_SIZE + 1):
+    stamped = _badge(pages[(n - 1) % len(pages)], f"{n} / {DECK_SIZE}")
+    stamped.save(DECK60 / f"slide-{n:02d}.jpg", quality=80, optimize=True)
+    _resize(stamped, THUMB_WIDTH).save(DECK60 / f"thumb-{n:02d}.jpg", quality=70, optimize=True)
+
+
+def _total_kb(pattern):
+    return sum(f.stat().st_size for f in DECK60.glob(pattern)) / 1024
+
+
+for f in sorted(OUT.glob("*.*")):
     print(f"{f.name:14} {f.stat().st_size / 1024:7.1f} KB")
+print(f"deck60 slides {_total_kb('slide-*.jpg'):7.1f} KB total, thumbs {_total_kb('thumb-*.jpg'):7.1f} KB total")

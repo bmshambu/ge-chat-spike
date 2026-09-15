@@ -68,13 +68,25 @@ Round 1 — office GE, 2026-09-15:
 | `tabs-deck` | ✅ | 9 tabs, each slide renders, switching is local (screenshot: tab 7) |
 | `slider-deck` | ❌ | slider + "Slide 9 of 9" render; **image empty**, rest of card intact. Expected per schema: a `path` is a literal JSON Pointer, so `${/s${/page}}` can't build a path. Slider can't pick among stored slides. |
 
-Round 2 — workarounds for slider-deck (pending):
+Round 2 — workarounds for slider-deck (office GE, 2026-09-15):
 
 | probe | result | exact error / observation |
 |---|---|---|
-| `chips-deck` (formatString of selection) | | |
-| `chips-deck-bind` (url bound to selection) | | |
-| `thumbs-modal` (thumbnail opens slide) | | |
+| `chips-deck` (formatString of selection) | ❌ | chips render and select (chip 3 blue), **no image** below. formatString of a string-array path doesn't yield a usable URL. |
+| `chips-deck-bind` (url bound to selection) | ✅ | tap chip 4 → slide 4 "Our approach" shows, no round trip. **Bind Image url straight to the ChoicePicker path.** |
+| `thumbs-modal` (thumbnail opens slide) | ✅ | an `Image` works as a Modal trigger; modal shows "Slide 1 of 9" full slide |
+
+Slider ↔ thumbnails is **not possible** on the basic catalog: a Slider only writes a number, and
+nothing can map a number to a stored slide, open a Modal, switch a Tab or scroll. Sliders stay
+viable only over hosted, pattern-named URLs (`slider-gstatic`).
+
+Round 3 — 60 slides (pending). Slides are stamped "N / 60" — check order, not just presence:
+
+| probe | result | render time, order, size errors |
+|---|---|---|
+| `thumbs-modal-60` (one grid) | | |
+| `tabs-thumbs-60` (tabs of 12) | | |
+| `chips-deck-60` (60 chips, one slide) | | |
 
 ## What the results mean
 

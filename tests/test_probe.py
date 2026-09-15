@@ -106,10 +106,39 @@ def test_thumbs_modal_nine_modals_each_opens_its_slide():
     comps = {c["id"]: c for c in _components(probe.thumbs_modal())}
     modals = [c for c in comps.values() if c["component"] == "Modal"]
     assert len(modals) == 9
+    rows = [c for c in comps.values() if c["component"] == "Row"]
     for i in range(1, 10):
         m = comps[f"m{i}"]
         assert comps[m["trigger"]]["url"] == comps[f"ci{i}"]["url"]
-        assert f"m{i}" in comps[f"row{(i - 1) // 3 + 1}"]["children"]
+        assert sum(f"m{i}" in r["children"] for r in rows) == 1
+
+
+def test_deck60_assets():
+    assert len(list(probe.DECK60.glob("slide-*.jpg"))) == 60
+    assert len(list(probe.DECK60.glob("thumb-*.jpg"))) == 60
+    items = probe.deck60_items()
+    assert [n for n, _, _ in items] == list(range(1, 61))
+    assert all(len(t) < len(s) for _, t, s in items)  # thumbnails really are smaller
+
+
+def test_thumbs_modal_60_in_order():
+    comps = {c["id"]: c for c in _components(probe.thumbs_modal_60())}
+    assert sum(c["component"] == "Modal" for c in comps.values()) == 60
+    assert comps["ch60"]["text"] == "Slide 60 of 60"
+    grid = [m for r in comps["col"]["children"] if r.startswith("row") for m in comps[r]["children"]]
+    assert grid == [f"m{n}" for n in range(1, 61)]
+
+
+def test_tabs_thumbs_60_pages_of_12():
+    comps = {c["id"]: c for c in _components(probe.tabs_thumbs_60())}
+    assert [t["title"] for t in comps["tabs"]["tabs"]] == ["1–12", "13–24", "25–36", "37–48", "49–60"]
+    assert sum(c["component"] == "Modal" for c in comps.values()) == 60
+
+
+def test_chips_deck_60_bound():
+    comps = {c["id"]: c for c in _components(probe.chips_deck_60())}
+    assert len(comps["pager"]["options"]) == 60
+    assert comps["img"]["url"] == {"path": "/current"}
 
 
 @pytest.mark.parametrize("typed,expected", [

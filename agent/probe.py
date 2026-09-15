@@ -82,9 +82,12 @@ TRIGGERS = {
     "slider-gstatic": "Slider drives an Image URL via formatString (hosted gstatic images 1–5)",
     "tabs-deck": "all slides as data: URIs, one per tab — navigation with no round trip",
     "slider-deck": "Slider picks a data: URI slide from the data model — ❌ in GE (no dynamic paths)",
-    "chips-deck": "numbered chips whose values ARE the slides; Image = formatString of the selection",
-    "chips-deck-bind": "same chips; Image url bound straight to the selection path (no formatString)",
-    "thumbs-modal": "3×3 thumbnail grid; tap a thumbnail to open that slide in a Modal",
+    "chips-deck": "numbered chips; Image = formatString of the selection — ❌ in GE (no image)",
+    "chips-deck-bind": "numbered chips; Image url bound straight to the selection — ✅ in GE",
+    "thumbs-modal": "3×3 thumbnail grid; tap a thumbnail to open that slide in a Modal — ✅ in GE",
+    "thumbs-modal-60": "60 thumbnails in one grid, each opens its slide",
+    "tabs-thumbs-60": "60 thumbnails split into tabs of 12, each opens its slide",
+    "chips-deck-60": "60 numbered chips switching one large slide",
 }
 
 
@@ -154,11 +157,12 @@ def slider_deck() -> list[dict]:
                  model)
 
 
-def _chips_deck(name: str, url: dict, how: str) -> list[dict]:
+def _chips_deck(name: str, url: dict, how: str, files: list[Path] | None = None) -> list[dict]:
     """The slider can't choose a data-model path, but a ChoicePicker writes its option VALUE.
     So each chip's value is the slide's data: URI, and the Image reads the selection back."""
-    uris = [data_uri(f) for f in slide_files()]
-    return _card(name, name, f"Tap a number. The slide below should switch with no round trip ({how}).",
+    uris = [data_uri(f) for f in (files or slide_files())]
+    return _card(name, name, f"Tap a number. The slide below should switch with no round trip ({how}). "
+                             f"{len(uris)} slides, ~{_kb(uris)} KB of images.",
                  [{"id": "pager", "component": "ChoicePicker", "label": "Slide", "variant": "mutuallyExclusive",
                    "displayStyle": "chips", "value": {"path": "/current"},
                    "options": [{"label": str(i), "value": u} for i, u in enumerate(uris, start=1)]},
@@ -175,23 +179,75 @@ def chips_deck_bind() -> list[dict]:
     return _chips_deck("chips-deck-bind", {"path": "/current"}, "url bound to /current")
 
 
-def thumbs_modal() -> list[dict]:
-    files = slide_files()
+def _kb(uris) -> int:
+    return round(sum(len(u) for u in uris) / 1024)
+
+
+def _thumb_grid(items: list[tuple[int, str, str]], total: int, per_row: int = 3) -> tuple[list[dict], list[dict]]:
+    """items = (slide number, thumbnail uri, full uri). Returns (Row components, everything they reference).
+    Each thumbnail is the trigger of a Modal whose content is the full slide."""
     rows, nested = [], []
-    for r in range(0, len(files), 3):
-        row_id = f"row{r // 3 + 1}"
-        rows.append({"id": row_id, "component": "Row", "align": "center", "justify": "start",
-                     "children": [f"m{i}" for i in range(r + 1, min(r + 3, len(files)) + 1)]})
-    for i, f in enumerate(files, start=1):
-        uri = data_uri(f)
+    for r in range(0, len(items), per_row):
+        chunk = items[r:r + per_row]
+        rows.append({"id": f"row{chunk[0][0]}", "component": "Row", "align": "center", "justify": "start",
+                     "children": [f"m{n}" for n, _, _ in chunk]})
+    for n, thumb, full in items:
         nested += [
-            {"id": f"m{i}", "component": "Modal", "trigger": f"t{i}", "content": f"c{i}", "weight": 1},
-            {**_image(f"t{i}", uri), "variant": "smallFeature"},
-            {"id": f"c{i}", "component": "Column", "align": "stretch", "children": [f"ch{i}", f"ci{i}"]},
-            _text(f"ch{i}", f"Slide {i} of {len(files)}", "h5"),
-            _image(f"ci{i}", uri),
+            {"id": f"m{n}", "component": "Modal", "trigger": f"t{n}", "content": f"c{n}", "weight": 1},
+            {**_image(f"t{n}", thumb), "variant": "smallFeature"},
+            {"id": f"c{n}", "component": "Column", "align": "stretch", "children": [f"ch{n}", f"ci{n}"]},
+            _text(f"ch{n}", f"Slide {n} of {total}", "h5"),
+            _image(f"ci{n}", full),
         ]
+    return rows, nested
+
+
+def thumbs_modal() -> list[dict]:
+    uris = [data_uri(f) for f in slide_files()]
+    rows, nested = _thumb_grid([(i, u, u) for i, u in enumerate(uris, start=1)], len(uris))
     return _card("thumbs-modal", "thumbs-modal", "Tap a thumbnail to open that slide.", rows, nested=nested)
+
+
+# ── 60-slide scale tests (assets/deck60, each slide stamped "N / 60") ─────────
+
+DECK60 = ASSETS / "deck60"
+
+
+def deck60_items() -> list[tuple[int, str, str]]:
+    slides = sorted(DECK60.glob("slide-*.jpg"))
+    thumbs = sorted(DECK60.glob("thumb-*.jpg"))
+    return [(n, data_uri(t), data_uri(s)) for n, (t, s) in enumerate(zip(thumbs, slides), start=1)]
+
+
+def thumbs_modal_60() -> list[dict]:
+    items = deck60_items()
+    rows, nested = _thumb_grid(items, len(items))
+    kb = _kb([t for _, t, _ in items] + [s for _, _, s in items])
+    return _card("thumbs-modal-60", "thumbs-modal-60",
+                 f"{len(items)} thumbnails in one grid, each opens its slide. ~{kb} KB of images.",
+                 rows, nested=nested)
+
+
+def tabs_thumbs_60(per_tab: int = 12) -> list[dict]:
+    """Thumbnail grid split into tabs of 12 — the whole deck without one long wall."""
+    items = deck60_items()
+    tabs, nested = [], []
+    for p in range(0, len(items), per_tab):
+        chunk = items[p:p + per_tab]
+        page_id = f"page{p // per_tab + 1}"
+        rows, refs = _thumb_grid(chunk, len(items))
+        tabs.append({"title": f"{chunk[0][0]}–{chunk[-1][0]}", "child": page_id})
+        nested += [{"id": page_id, "component": "Column", "align": "stretch", "children": [r["id"] for r in rows]},
+                   *rows, *refs]
+    kb = _kb([t for _, t, _ in items] + [s for _, _, s in items])
+    return _card("tabs-thumbs-60", "tabs-thumbs-60",
+                 f"{len(items)} slides, {per_tab} thumbnails per tab; tap one to open it. ~{kb} KB of images.",
+                 [{"id": "tabs", "component": "Tabs", "tabs": tabs}], nested=nested)
+
+
+def chips_deck_60() -> list[dict]:
+    return _chips_deck("chips-deck-60", {"path": "/current"}, "url bound to /current",
+                       files=sorted(DECK60.glob("slide-*.jpg")))
 
 
 BUILDERS = {
@@ -206,6 +262,9 @@ BUILDERS = {
     "chips-deck": chips_deck,
     "chips-deck-bind": chips_deck_bind,
     "thumbs-modal": thumbs_modal,
+    "thumbs-modal-60": thumbs_modal_60,
+    "tabs-thumbs-60": tabs_thumbs_60,
+    "chips-deck-60": chips_deck_60,
 }
 
 
