@@ -80,13 +80,35 @@ Slider ↔ thumbnails is **not possible** on the basic catalog: a Slider only wr
 nothing can map a number to a stored slide, open a Modal, switch a Tab or scroll. Sliders stay
 viable only over hosted, pattern-named URLs (`slider-gstatic`).
 
-Round 3 — 60 slides (pending). Slides are stamped "N / 60" — check order, not just presence:
+Round 3 — 60 slides (office GE, 2026-09-15):
 
 | probe | result | render time, order, size errors |
 |---|---|---|
-| `thumbs-modal-60` (one grid) | | |
-| `tabs-thumbs-60` (tabs of 12) | | |
-| `chips-deck-60` (60 chips, one slide) | | |
+| `thumbs-modal-60` (one grid, ~1.7 MB) | ❌ | "Probe: thumbs-modal-60" text shows, **no card, no error** |
+| `tabs-thumbs-60` (tabs of 12, ~1.7 MB) | ❌ | same — text only, card silently dropped |
+| `chips-deck-60` (60 chips, ~1.4 MB) | ❌ | same |
+
+The 9-slide `thumbs-modal` (~400 KB, one part) still renders in the same chat, so this is a
+**size ceiling between ~400 KB and ~1.4 MB**, enforced silently. All three put every image in
+a single `updateComponents` DataPart.
+
+Round 4 — find the ceiling and what it applies to (pending):
+
+| probe | what it isolates | result |
+|---|---|---|
+| `size-600` | one part ≈ 600 KB, one tiny image (padding is invisible) | |
+| `size-900` | one part ≈ 900 KB | |
+| `size-1200` | one part ≈ 1.2 MB | |
+| `split-60` | 60 thumbnails, **one card**, 11 parts of ≤ ~170 KB (~1.7 MB total) | |
+| `surfaces-60` | 60 thumbnails, **5 cards** of ~330 KB each, one reply (~1.7 MB total) | |
+
+Reading it: `split-60` ✅ → limit is **per DataPart**, chunk the payload. `surfaces-60` ✅ but
+`split-60` ❌ → limit is **per surface**. Both ❌ → limit is **per reply**; the `size-*` rows give
+the budget, and 60 slides need smaller images or more than one reply.
+
+If any card is dropped, open **F12 → Network**, find the `streamAssist` request, and check
+whether its response contains the `application/json+a2ui` parts. Present = GE refused to render;
+absent = dropped before reaching the browser (Agent Engine / GE backend).
 
 ## What the results mean
 

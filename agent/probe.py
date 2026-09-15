@@ -5,6 +5,7 @@ Every surface gets a fresh surfaceId, and every question gets its own surface, s
 payload that blanks one card cannot hide a pass in another.
 """
 import base64
+import json
 import uuid
 from pathlib import Path
 
@@ -12,6 +13,7 @@ CATALOG_BASIC = "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json
 ASSETS = Path(__file__).parent / "assets"
 GSTATIC = "https://www.gstatic.com/webp/gallery"  # 1.jpg … 5.jpg exist (checked)
 GSTATIC_COUNT = 5
+SIZE_PROBES_KB = (600, 900, 1200)  # round 4: ~400 KB rendered, 1.4 MB dropped
 
 
 # ── assets ───────────────────────────────────────────────────────────────────
@@ -55,20 +57,23 @@ def _surface(name: str, components: list[dict], data_model: dict | None = None) 
     return msgs
 
 
-def _card(name: str, title: str, note: str, body: list[dict], data_model: dict | None = None,
-          nested: list[dict] = ()) -> list[dict]:
-    """Card > Column > [h4 title, body note, *body]. `nested` = components referenced by id
-    from inside `body` (e.g. tab contents), so not direct children of the column."""
-    comps = [
+def _card_head(title: str, note: str, body: list[dict]) -> list[dict]:
+    """Card > Column > [h4 title, body note, *body]."""
+    return [
         {"id": "root", "component": "Card", "child": "col"},
         {"id": "col", "component": "Column", "align": "stretch",
          "children": ["title", "note"] + [c["id"] for c in body]},
         _text("title", title, "h4"),
         _text("note", note),
         *body,
-        *nested,
     ]
-    return _surface(name, comps, data_model)
+
+
+def _card(name: str, title: str, note: str, body: list[dict], data_model: dict | None = None,
+          nested: list[dict] = ()) -> list[dict]:
+    """`nested` = components referenced by id from inside `body` (e.g. tab contents),
+    so not direct children of the column."""
+    return _surface(name, [*_card_head(title, note, body), *nested], data_model)
 
 
 # ── probes ───────────────────────────────────────────────────────────────────
@@ -85,9 +90,12 @@ TRIGGERS = {
     "chips-deck": "numbered chips; Image = formatString of the selection — ❌ in GE (no image)",
     "chips-deck-bind": "numbered chips; Image url bound straight to the selection — ✅ in GE",
     "thumbs-modal": "3×3 thumbnail grid; tap a thumbnail to open that slide in a Modal — ✅ in GE",
-    "thumbs-modal-60": "60 thumbnails in one grid, each opens its slide",
-    "tabs-thumbs-60": "60 thumbnails split into tabs of 12, each opens its slide",
-    "chips-deck-60": "60 numbered chips switching one large slide",
+    "thumbs-modal-60": "60 thumbnails in one grid — ❌ in GE (card dropped, ~1.7 MB)",
+    "tabs-thumbs-60": "60 thumbnails in tabs of 12 — ❌ in GE (card dropped, ~1.7 MB)",
+    "chips-deck-60": "60 chips switching one slide — ❌ in GE (card dropped, ~1.4 MB)",
+    **{f"size-{kb}": f"one part padded to ~{kb} KB — where is the ceiling?" for kb in SIZE_PROBES_KB},
+    "split-60": "60 thumbnails, one card, sent as many ~170 KB parts — is the limit per part?",
+    "surfaces-60": "60 thumbnails as 5 cards of 12 in one reply — is the limit per card?",
 }
 
 
@@ -250,6 +258,57 @@ def chips_deck_60() -> list[dict]:
                        files=sorted(DECK60.glob("slide-*.jpg")))
 
 
+# ── Size ceiling (round 4) ───────────────────────────────────────────────────
+# Round 3: every 60-slide reply (1.4–1.7 MB, one updateComponents part) dropped its card
+# silently, while thumbs-modal (~400 KB) renders. These find where the limit sits and
+# whether it applies per DataPart, per surface or per whole reply.
+
+SPLIT_SLIDES_PER_PART = 6   # ~170 KB per updateComponents part
+
+
+def size_probe(kb: int) -> list[dict]:
+    """One small visible slide; the updateComponents part is padded to ~kb KB with invisible
+    accessibility text, so size is tested apart from image count."""
+    name = f"size-{kb}"
+    img = {**_image("img", data_uri(ASSETS / "tiny.png")), "description": ""}
+    msgs = _card(name, name, f"Single updateComponents part padded to ~{kb} KB. Renders = under the limit.",
+                 [img])
+    comps = msgs[1]["updateComponents"]["components"]
+    comp = next(c for c in comps if c["id"] == "img")
+    comp["description"] = "x" * max(0, kb * 1024 - len(json.dumps(msgs[1])))
+    return msgs
+
+
+def split_60() -> list[dict]:
+    """thumbs-modal-60 as ONE surface but many small updateComponents parts: slide components
+    first (6 slides per part), then the card skeleton that references them."""
+    items = deck60_items()
+    rows, nested = _thumb_grid(items, len(items))
+    sid = f"split-60-{uuid.uuid4().hex[:12]}"
+    per_slide = len(nested) // len(items)
+    step = per_slide * SPLIT_SLIDES_PER_PART
+    parts = [nested[i:i + step] for i in range(0, len(nested), step)]
+    head = _card_head("split-60", f"60 thumbnails, one surface, sent in {len(parts) + 1} parts "
+                                  f"of ≤ ~{SPLIT_SLIDES_PER_PART} slides each. Tap one to open it.", rows)
+    msgs = [{"version": "v0.9", "createSurface": {"surfaceId": sid, "catalogId": CATALOG_BASIC,
+                                                  "sendDataModel": False}}]
+    msgs += [{"version": "v0.9", "updateComponents": {"surfaceId": sid, "components": p}} for p in [*parts, head]]
+    return msgs
+
+
+def surfaces_60(per_card: int = 12) -> list[dict]:
+    """60 thumbnails as 5 separate cards of 12 (~330 KB each) in ONE reply."""
+    items = deck60_items()
+    msgs = []
+    for k, p in enumerate(range(0, len(items), per_card), start=1):
+        chunk = items[p:p + per_card]
+        rows, nested = _thumb_grid(chunk, len(items))
+        label = f"{chunk[0][0]}–{chunk[-1][0]}"
+        msgs += _card(f"surfaces-60-{k}", f"surfaces-60 · {label}",
+                      f"Card {k} of 5 in one reply. Tap a thumbnail to open it.", rows, nested=nested)
+    return msgs
+
+
 BUILDERS = {
     "help": help_card,
     "img-data-tiny": img_data_tiny,
@@ -265,6 +324,9 @@ BUILDERS = {
     "thumbs-modal-60": thumbs_modal_60,
     "tabs-thumbs-60": tabs_thumbs_60,
     "chips-deck-60": chips_deck_60,
+    **{f"size-{kb}": (lambda kb=kb: size_probe(kb)) for kb in SIZE_PROBES_KB},
+    "split-60": split_60,
+    "surfaces-60": surfaces_60,
 }
 
 

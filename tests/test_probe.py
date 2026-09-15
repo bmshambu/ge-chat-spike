@@ -5,6 +5,7 @@ Whether GE renders it is answered only by deploying.
 
 Run from ge_chat_spike/:  ..\..\a2ui_gallary\.venv\Scripts\python -m pytest tests -v
 """
+import json
 import os
 import sys
 from unittest.mock import MagicMock
@@ -25,6 +26,17 @@ def _components(msgs):
     return next(m["updateComponents"]["components"] for m in msgs if "updateComponents" in m)
 
 
+def _by_surface(msgs) -> dict[str, list[dict]]:
+    """All components per surface, merged across however many updateComponents parts."""
+    out: dict[str, list[dict]] = {}
+    for m in msgs:
+        if "createSurface" in m:
+            out[m["createSurface"]["surfaceId"]] = []
+        elif "updateComponents" in m:
+            out[m["updateComponents"]["surfaceId"]] += m["updateComponents"]["components"]
+    return out
+
+
 def _model(msgs):
     return next((m["updateDataModel"]["value"] for m in msgs if "updateDataModel" in m), None)
 
@@ -38,16 +50,16 @@ class TestEveryProbe:
         assert all(convert_genai_part_to_a2a_part(to_genai_part(m)) for m in msgs)
 
     def test_every_referenced_id_exists_once(self, trigger):
-        comps = _components(probe.BUILDERS[trigger]())
-        ids = [c["id"] for c in comps]
-        assert len(ids) == len(set(ids)) and "root" in ids
-        refs = []
-        for c in comps:
-            refs += c.get("children", []) + ([c["child"]] if "child" in c else [])
-            refs += [t["child"] for t in c.get("tabs", [])]
-            refs += [c[k] for k in ("trigger", "content") if c["component"] == "Modal"]
-        assert set(refs) <= set(ids)
-        assert set(ids) - set(refs) == {"root"}  # nothing orphaned
+        for comps in _by_surface(probe.BUILDERS[trigger]()).values():
+            ids = [c["id"] for c in comps]
+            assert len(ids) == len(set(ids)) and "root" in ids
+            refs = []
+            for c in comps:
+                refs += c.get("children", []) + ([c["child"]] if "child" in c else [])
+                refs += [t["child"] for t in c.get("tabs", [])]
+                refs += [c[k] for k in ("trigger", "content") if c["component"] == "Modal"]
+            assert set(refs) <= set(ids)
+            assert set(ids) - set(refs) == {"root"}  # nothing orphaned
 
     def test_fresh_surface_id_each_call(self, trigger):
         a = probe.BUILDERS[trigger]()[0]["createSurface"]["surfaceId"]
@@ -139,6 +151,31 @@ def test_chips_deck_60_bound():
     comps = {c["id"]: c for c in _components(probe.chips_deck_60())}
     assert len(comps["pager"]["options"]) == 60
     assert comps["img"]["url"] == {"path": "/current"}
+
+
+@pytest.mark.parametrize("kb", probe.SIZE_PROBES_KB)
+def test_size_probe_hits_target(kb):
+    msgs = probe.size_probe(kb)
+    part = len(json.dumps(msgs[1])) / 1024
+    assert abs(part - kb) < 2  # the padded updateComponents part is ~kb KB
+    img = next(c for c in _components(msgs) if c["component"] == "Image")
+    assert img["url"].startswith("data:image/png")
+
+
+def test_split_60_one_surface_small_parts_head_last():
+    msgs = probe.split_60()
+    updates = [m["updateComponents"] for m in msgs if "updateComponents" in m]
+    assert len({u["surfaceId"] for u in updates}) == 1
+    assert max(len(json.dumps(u)) for u in updates) < 250 * 1024
+    assert any(c["id"] == "root" for c in updates[-1]["components"])  # skeleton after its children
+    (comps,) = _by_surface(msgs).values()
+    assert sum(c["component"] == "Modal" for c in comps) == 60
+
+
+def test_surfaces_60_five_cards_of_twelve():
+    surfaces = _by_surface(probe.surfaces_60())
+    assert len(surfaces) == 5
+    assert all(sum(c["component"] == "Modal" for c in comps) == 12 for comps in surfaces.values())
 
 
 @pytest.mark.parametrize("typed,expected", [
