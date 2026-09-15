@@ -7,8 +7,10 @@ line naming the probe. No model judgement anywhere in the path.
 import json
 import re
 
-from google.adk.agents import LlmAgent
+from google.adk.agents import BaseAgent, LlmAgent, SequentialAgent
 from google.adk.agents.callback_context import CallbackContext
+from google.adk.agents.invocation_context import InvocationContext
+from google.adk.events import Event
 from google.adk.models.llm_request import LlmRequest
 from google.adk.models.llm_response import LlmResponse
 from google.genai import types as genai_types
@@ -78,7 +80,12 @@ def _append_probe(callback_context: CallbackContext, llm_response: LlmResponse):
     if any(p.function_call for p in content.parts if p.function_call):
         return None
 
-    name, messages = probe.cards_for(_user_text(_current_user_content(callback_context)))
+    trigger = probe.normalize(_user_text(_current_user_content(callback_context)))
+    if trigger in probe.EVENT_BUILDERS:
+        # Multi-event probe: only the first chunk rides on this event; FollowUpEvents sends the rest.
+        name, messages = trigger, probe.event_chunks(trigger, callback_context.invocation_id)[0]
+    else:
+        name, messages = probe.cards_for(trigger)
 
     # Model text is irrelevant: drop it and lead with one line naming the probe.
     content.parts = [genai_types.Part(text=f"Probe: **{name}**")]
@@ -86,10 +93,32 @@ def _append_probe(callback_context: CallbackContext, llm_response: LlmResponse):
     return llm_response
 
 
-root_agent = LlmAgent(
+class FollowUpEvents(BaseAgent):
+    """Runs after the LLM agent in the same turn. For multi-event probes, yields the remaining
+    chunks as separate events (same surfaceId, derived from the invocation id). Otherwise silent."""
+
+    async def _run_async_impl(self, ctx: InvocationContext):
+        trigger = probe.normalize(_user_text(ctx.user_content))
+        if trigger not in probe.EVENT_BUILDERS:
+            return
+        for chunk in probe.event_chunks(trigger, ctx.invocation_id)[1:]:
+            yield Event(
+                invocation_id=ctx.invocation_id,
+                author=self.name,
+                branch=ctx.branch,
+                content=genai_types.Content(role="model", parts=[to_genai_part(m) for m in chunk]),
+            )
+
+
+probe_agent = LlmAgent(
     name="deck_preview_probe_agent",
     model="gemini-2.5-flash",
     instruction="Reply with exactly one short line naming the test that was run. Never output JSON.",
     before_model_callback=_strip_history,
     after_model_callback=_append_probe,
+)
+
+root_agent = SequentialAgent(
+    name="deck_preview_probe",
+    sub_agents=[probe_agent, FollowUpEvents(name="probe_follow_up_events")],
 )

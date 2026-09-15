@@ -5,6 +5,7 @@ Whether GE renders it is answered only by deploying.
 
 Run from ge_chat_spike/:  ..\..\a2ui_gallary\.venv\Scripts\python -m pytest tests -v
 """
+import asyncio
 import json
 import os
 import sys
@@ -19,7 +20,7 @@ from google.genai import types as genai_types
 
 from agent import probe
 from agent.a2ui import to_genai_part
-from agent.agent import _append_probe
+from agent.agent import FollowUpEvents, _append_probe, root_agent
 
 
 def _components(msgs):
@@ -219,10 +220,52 @@ def test_trigger_matching(typed, expected):
     assert probe.cards_for(typed)[0] == expected
 
 
-def _ctx(text):
+def _ctx(text, invocation_id="inv-1"):
     ctx = MagicMock()
     ctx.user_content = genai_types.Content(role="user", parts=[genai_types.Part(text=text)])
+    ctx.invocation_id = invocation_id
+    ctx.branch = None
     return ctx
+
+
+def _follow_up(text, invocation_id="inv-1"):
+    async def collect():
+        return [e async for e in FollowUpEvents(name="f")._run_async_impl(_ctx(text, invocation_id))]
+    return asyncio.run(collect())
+
+
+@pytest.mark.parametrize("trigger", list(probe.EVENT_BUILDERS))
+def test_event_chunks_ordered_under_budget_one_surface(trigger):
+    chunks = probe.event_chunks(trigger, "inv-1")
+    assert len(chunks) >= 3
+    assert all(len(json.dumps(c)) <= probe.EVENT_KB * 1024 for c in chunks)
+    flat = [m for c in chunks for m in c]
+    assert "createSurface" in flat[0]
+    assert any(c["id"] == "root" for c in flat[-1]["updateComponents"]["components"])
+    sids = {next(iter(v for k, v in m.items() if k != "version"))["surfaceId"] for m in flat}
+    assert sids == {probe.sid_for(trigger, "inv-1")}
+
+
+def test_event_probe_first_chunk_on_llm_event_rest_as_follow_ups():
+    resp = _resp()
+    _append_probe(_ctx("EVENTS-6MB "), resp)
+    chunks = probe.event_chunks("events-6mb", "inv-1")
+    assert resp.content.parts[0].text == "Probe: **events-6mb**"
+    assert len(resp.content.parts) == 1 + len(chunks[0])
+    events = _follow_up("events-6mb")
+    assert [len(e.content.parts) for e in events] == [len(c) for c in chunks[1:]]
+    first_sid = convert_genai_part_to_a2a_part(resp.content.parts[1]).root.data["createSurface"]["surfaceId"]
+    last = convert_genai_part_to_a2a_part(events[-1].content.parts[-1]).root.data
+    assert last["updateComponents"]["surfaceId"] == first_sid
+
+
+def test_follow_up_silent_for_single_event_probes():
+    assert _follow_up("thumbs-modal") == []
+    assert _follow_up("hello") == []
+
+
+def test_root_runs_probe_then_follow_up():
+    assert [a.name for a in root_agent.sub_agents] == ["deck_preview_probe_agent", "probe_follow_up_events"]
 
 
 def _resp(text="Some model chatter"):

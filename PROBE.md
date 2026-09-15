@@ -115,14 +115,34 @@ the card is dropped with no error.
   size. Thumbnail grid + Modal splits cleanly; chips only work for small decks or small images.
 - Untested: whether a reply has a ceiling above 1.66 MB (matters for image-heavy real slides).
 
-Round 5 — whole-reply ceiling and a realistic heavy deck (pending):
+Round 5 — whole-reply ceiling and a realistic heavy deck (office GE, 2026-09-15):
 
 | probe | what it isolates | result |
 |---|---|---|
-| `reply-3mb` | one card, ~3 MB reply, every part ~500 KB, visible "part k of n" per part | |
-| `reply-6mb` | same, ~6 MB | |
-| `reply-12mb` | same, ~12 MB | |
-| `heavy-60` | 60 photo slides at 1200 px + thumbnails, packed into ≤ ~500 KB parts | |
+| `reply-3mb` | one card, 3.4 MB reply, 7 parts ~500 KB + skeleton | ✅ all 7 "part k of 7" lines show |
+| `reply-6mb` | same, 6.3 MB | ❌ **400 "exceeded limit"** (explicit error, unlike the silent per-part drop) |
+| `reply-12mb` | same, 12.2 MB | ❌ 400 "exceeded limit" |
+| `heavy-60` | 60 photo slides at 1200 px (~200 KB each) + thumbnails, 16.1 MB | ❌ 400 "exceeded limit" |
+
+**Verdict: a reply ceiling between 3.4 MB and 6.3 MB** (a 4 MB response-message limit would fit),
+on top of the ~1 MB per-part limit. Every one of these replies was a **single agent event**.
+Photo slides at 1200 px cost ~270 KB each as base64, so one event holds only ~12 of them.
+
+Round 6 — is the reply ceiling per event or per turn? (pending)
+
+Same content, one card, but spread over several agent events in the same turn, each ≤ 2.5 MB
+(the LLM agent's event carries the first chunk, a follow-up agent yields the rest). The card only
+appears when the last event (with the `root`) arrives.
+
+| probe | content | events | result |
+|---|---|---|---|
+| `events-6mb` | the `reply-6mb` card (6.3 MB) | 4 (≤ 1.95 MB each) | |
+| `events-12mb` | the `reply-12mb` card (12.2 MB) | 7 (≤ 1.95 MB each) | |
+| `heavy-60-events` | the `heavy-60` deck (16.1 MB) | 7 (≤ 2.42 MB each) | |
+
+Controls in the same deploy: `reply-3mb` should still render and `reply-6mb` still 400 — the root
+agent is now a SequentialAgent (LLM agent → follow-up agent), so re-check both.
+**Please copy the exact 400 error text** (and, from F12 → Network, which request returned it).
 
 For each: does the card render, do **all** "part k of n" lines show (a gap = parts dropped
 mid-reply), how long until it appears, and does the chat stay responsive after scrolling back?

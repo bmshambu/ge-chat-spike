@@ -5,6 +5,7 @@ Every surface gets a fresh surfaceId, and every question gets its own surface, s
 payload that blanks one card cannot hide a pass in another.
 """
 import base64
+import hashlib
 import json
 import math
 import uuid
@@ -17,6 +18,7 @@ GSTATIC_COUNT = 5
 SIZE_PROBES_KB = (600, 900, 1200)  # round 4: 900 KB part rendered, 1.2 MB part dropped
 REPLY_PROBES_MB = (3, 6, 12)       # round 5: is there a whole-reply ceiling?
 PART_KB = 500                      # per-DataPart budget for chunked probes (limit ~1 MB)
+EVENT_KB = 2500                    # round 6: per-event budget (3.4 MB reply ✅, 6.3 MB → 400)
 
 
 # ── assets ───────────────────────────────────────────────────────────────────
@@ -100,9 +102,12 @@ TRIGGERS = {
        for kb in SIZE_PROBES_KB},
     "split-60": "60 thumbnails, one card, ≤ 175 KB parts — ✅ in GE (limit is per part)",
     "surfaces-60": "60 thumbnails as 5 cards of 12 in one reply — ✅ in GE",
-    **{f"reply-{mb}mb": f"one card, ~{mb} MB reply in ~{PART_KB} KB parts — is there a reply ceiling?"
+    **{f"reply-{mb}mb": f"one card, ~{mb} MB reply in one event" + (" — ✅ in GE" if mb <= 3 else " — ❌ 400 in GE")
        for mb in REPLY_PROBES_MB},
-    "heavy-60": "60 photo-heavy 1200 px slides, chunked — realistic worst case",
+    "heavy-60": "60 photo slides at 1200 px (~16 MB) in one event — ❌ 400 in GE",
+    "events-6mb": "~6 MB for one card spread over events of ≤ 2.5 MB — is the limit per event?",
+    "events-12mb": "~12 MB, same, over ~5 events",
+    "heavy-60-events": "60 photo slides at 1200 px (~16 MB) over ~7 events",
 }
 
 
@@ -302,7 +307,8 @@ def size_probe(kb: int) -> list[dict]:
     return msgs
 
 
-def _split_thumbs(name: str, items: list[tuple[int, str, str]], part_kb: float, what: str) -> list[dict]:
+def _split_thumbs(name: str, items: list[tuple[int, str, str]], part_kb: float, what: str,
+                  sid: str | None = None) -> list[dict]:
     """A thumbnail-grid deck as ONE surface sent in many small updateComponents parts:
     slide components first (packed to ≤ part_kb), then the card skeleton that references them."""
     rows, nested = _thumb_grid(items, len(items))
@@ -311,7 +317,7 @@ def _split_thumbs(name: str, items: list[tuple[int, str, str]], part_kb: float, 
     total_kb = _kb([t for _, t, _ in items] + [s for _, _, s in items])
     head = _card_head(name, f"{len(items)} {what}, one card, sent in {len(parts) + 1} parts of ≤ ~{part_kb:.0f} KB "
                             f"(~{total_kb / 1024:.1f} MB of images). Tap a thumbnail to open it.", rows)
-    sid = f"{name}-{uuid.uuid4().hex[:12]}"
+    sid = sid or f"{name}-{uuid.uuid4().hex[:12]}"
     msgs = [{"version": "v0.9", "createSurface": {"surfaceId": sid, "catalogId": CATALOG_BASIC,
                                                   "sendDataModel": False}}]
     msgs += [{"version": "v0.9", "updateComponents": {"surfaceId": sid, "components": p}} for p in [*parts, head]]
@@ -323,16 +329,16 @@ def split_60() -> list[dict]:
     return _split_thumbs("split-60", deck60_items(), 175, "text slides")
 
 
-def heavy_60() -> list[dict]:
+def heavy_60(sid: str | None = None, name: str = "heavy-60") -> list[dict]:
     """60 photo-heavy 1200 px slides — the realistic worst case — chunked to PART_KB."""
-    return _split_thumbs("heavy-60", _deck_items(HEAVY60), PART_KB, "photo slides at 1200 px")
+    return _split_thumbs(name, _deck_items(HEAVY60), PART_KB, "photo slides at 1200 px", sid)
 
 
-def reply_probe(mb: int) -> list[dict]:
+def reply_probe(mb: int, sid: str | None = None, name: str | None = None) -> list[dict]:
     """One card whose reply totals ~mb MB, every part ~PART_KB (safely under the per-part limit).
     Each part carries a visible 'part k of n' line plus invisible padding, so a missing part shows."""
-    name = f"reply-{mb}mb"
-    sid = f"{name}-{uuid.uuid4().hex[:12]}"
+    name = name or f"reply-{mb}mb"
+    sid = sid or f"{name}-{uuid.uuid4().hex[:12]}"
     n = math.ceil(mb * 1024 / PART_KB)
     tiny = data_uri(ASSETS / "tiny.png")
     msgs = [{"version": "v0.9", "createSurface": {"surfaceId": sid, "catalogId": CATALOG_BASIC,
@@ -350,6 +356,30 @@ def reply_probe(mb: int) -> list[dict]:
     head[1]["children"] += [f"r{k}" for k in range(1, n + 1)]  # head[1] is the card's Column
     msgs.append({"version": "v0.9", "updateComponents": {"surfaceId": sid, "components": head}})
     return msgs
+
+
+# ── Multi-event delivery (round 6) ───────────────────────────────────────────
+# Round 5: a 3.4 MB reply renders, 6.3 MB / 12 MB / heavy-60 fail with a 400 "exceeded limit".
+# All of those went out as ONE agent event. These send the same messages for ONE surface
+# spread over several events in the same turn, each ≤ EVENT_KB: is the limit per event or per turn?
+# The first chunk rides on the LLM agent's event; agent.FollowUpEvents yields the rest.
+
+EVENT_BUILDERS = {
+    "events-6mb": lambda sid: reply_probe(6, sid, "events-6mb"),
+    "events-12mb": lambda sid: reply_probe(12, sid, "events-12mb"),
+    "heavy-60-events": lambda sid: heavy_60(sid, "heavy-60-events"),
+}
+
+
+def sid_for(trigger: str, invocation_id: str) -> str:
+    """Same surfaceId from both agents in the turn, without passing megabytes through state."""
+    return f"{trigger}-{hashlib.sha1(invocation_id.encode()).hexdigest()[:12]}"
+
+
+def event_chunks(trigger: str, invocation_id: str, limit_kb: float = EVENT_KB) -> list[list[dict]]:
+    """The probe's messages packed into per-event chunks, in order (createSurface first, root last)."""
+    msgs = EVENT_BUILDERS[trigger](sid_for(trigger, invocation_id))
+    return _pack([[m] for m in msgs], limit_kb)
 
 
 def surfaces_60(per_card: int = 12) -> list[dict]:
@@ -388,9 +418,13 @@ BUILDERS = {
 }
 
 
+def normalize(text: str) -> str:
+    return (text or "").strip().lower()
+
+
 def cards_for(text: str) -> tuple[str, list[dict]]:
     """Exact trigger match (trimmed, case-insensitive). Unknown text → help."""
-    key = (text or "").strip().lower()
+    key = normalize(text)
     if key in BUILDERS:
         return key, BUILDERS[key]()
     return "help", help_card()
