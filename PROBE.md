@@ -92,15 +92,28 @@ The 9-slide `thumbs-modal` (~400 KB, one part) still renders in the same chat, s
 **size ceiling between ~400 KB and ~1.4 MB**, enforced silently. All three put every image in
 a single `updateComponents` DataPart.
 
-Round 4 — find the ceiling and what it applies to (pending):
+Round 4 — find the ceiling and what it applies to (office GE, 2026-09-15):
 
 | probe | what it isolates | result |
 |---|---|---|
-| `size-600` | one part ≈ 600 KB, one tiny image (padding is invisible) | |
-| `size-900` | one part ≈ 900 KB | |
-| `size-1200` | one part ≈ 1.2 MB | |
-| `split-60` | 60 thumbnails, **one card**, 11 parts of ≤ ~170 KB (~1.7 MB total) | |
-| `surfaces-60` | 60 thumbnails, **5 cards** of ~330 KB each, one reply (~1.7 MB total) | |
+| `size-600` | one part ≈ 600 KB, one tiny image (padding is invisible) | ✅ |
+| `size-900` | one part ≈ 900 KB | ✅ |
+| `size-1200` | one part ≈ 1.2 MB | ❌ card dropped silently |
+| `split-60` | 60 thumbnails, **one card**, 11 parts of ≤ 175 KB (1.66 MB total) | ✅ |
+| `surfaces-60` | 60 thumbnails, **5 cards** of ≤ 342 KB each, one reply (1.66 MB total) | ✅ |
+
+**Verdict: the limit is per DataPart, between 900 KB and 1.2 MB (likely 1 MB).** Not per surface,
+not per reply — a 1.66 MB reply renders when no single part is over the line. Over the line,
+the card is dropped with no error.
+
+**Rules for the real build:**
+- Keep every A2UI message (DataPart) **≤ ~800 KB** — margin under the observed 900 KB pass.
+- Send large surfaces as several `updateComponents` messages for the same `surfaceId`:
+  leaf components first, the `root` skeleton last (the `split-60` pattern).
+- **No single component may approach the limit.** A component can't be split across parts, so
+  `chips-deck-60` (one ChoicePicker holding every slide, ~1.4 MB) stays impossible at this image
+  size. Thumbnail grid + Modal splits cleanly; chips only work for small decks or small images.
+- Untested: whether a reply has a ceiling above 1.66 MB (matters for image-heavy real slides).
 
 Reading it: `split-60` ✅ → limit is **per DataPart**, chunk the payload. `surfaces-60` ✅ but
 `split-60` ❌ → limit is **per surface**. Both ❌ → limit is **per reply**; the `size-*` rows give
