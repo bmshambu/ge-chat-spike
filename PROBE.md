@@ -22,7 +22,7 @@ gcloud auth application-default login   # the office account
 
 Register in GE: Admin console → Agents → Add agent → Vertex AI Agent Engine → paste the
 `projects/.../reasoningEngines/...` name printed by the deploy. Assets are already built
-in `agent/assets/` (not yet committed) and ship inside the agent package; rerun `make_assets.py` only if the library changes.
+and committed in `agent/assets/` and ship inside the agent package; rerun `make_assets.py` only if the library changes.
 
 Offline tests: `.venv\Scripts\python -m pytest tests -q`
 
@@ -42,6 +42,10 @@ Keep **F12 → Console** open; copy any `Refused to load the image … img-src �
 | 6 | `tabs-deck` | 9 tabs, each shows its slide | 2 |
 | 7 | `slider-deck` | slide changes as the slider moves (nested `${/s${/page}}` lookup — a long shot) | 2 + 5 |
 
+**Round 2** (after `slider-deck` failed): `chips-deck`, `chips-deck-bind`, `thumbs-modal`.
+For chips, check the slide switches on tap **without** a "User action triggered." bubble.
+For the modal, check a thumbnail (not a button) opens it.
+
 For the sliders also note: does the value snap to whole numbers, or send `3.4`-style decimals
 (which would break `…/3.4.jpg`)?
 
@@ -49,18 +53,35 @@ For the sliders also note: does the value snap to whole numbers, or send `3.4`-s
 
 | probe | result | exact error / observation |
 |---|---|---|
-| `help` renders | | |
-| `img-data-tiny` | | |
-| `img-data` | | |
-| Console `img-src` line, if any | | |
-| `slider-bind` | | |
-| `slider-text` (formatString) | | |
-| slider value: integers or decimals? | | |
-| `slider-gstatic` | | |
-| `tabs-deck` | | |
-| `slider-deck` | | |
+Round 1 — office GE, 2026-09-15:
+
+| probe | result | exact error / observation |
+|---|---|---|
+| `help` renders | ✅ | |
+| `img-data-tiny` | ✅ | |
+| `img-data` | ✅ | **`data:` URI images render on v0.9** (v0.8 block gone) |
+| Console `img-src` line, if any | — | none needed, nothing blocked |
+| `slider-bind` | ✅ | plain `{"path"}` binding follows the slider live |
+| `slider-text` (formatString) | ✅ | `formatString` `${/page}` interpolates live in GE |
+| slider value: integers or decimals? | integers | "Slide 9 of 9"; `slider-gstatic` URLs resolved |
+| `slider-gstatic` | ✅ | Slider drives an Image URL client-side, no round trip |
+| `tabs-deck` | ✅ | 9 tabs, each slide renders, switching is local (screenshot: tab 7) |
+| `slider-deck` | ❌ | slider + "Slide 9 of 9" render; **image empty**, rest of card intact. Expected per schema: a `path` is a literal JSON Pointer, so `${/s${/page}}` can't build a path. Slider can't pick among stored slides. |
+
+Round 2 — workarounds for slider-deck (pending):
+
+| probe | result | exact error / observation |
+|---|---|---|
+| `chips-deck` (formatString of selection) | | |
+| `chips-deck-bind` (url bound to selection) | | |
+| `thumbs-modal` (thumbnail opens slide) | | |
 
 ## What the results mean
+
+**Round 1 verdict:** repo-only preview **works** (data URIs + Tabs). A Slider can drive an
+image only when the URL follows a pattern (`…/slide-${/page}.jpg`), i.e. hosted images whose
+one credential covers every slide — per-object signed URLs don't. Round 2 decides whether a
+numbered pager (chips) or thumbnail grid gives slider-like navigation without hosting.
 
 | outcome | design |
 |---|---|

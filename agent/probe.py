@@ -81,7 +81,10 @@ TRIGGERS = {
     "slider-text": "Slider + formatString Text — does ${/page} interpolate live?",
     "slider-gstatic": "Slider drives an Image URL via formatString (hosted gstatic images 1–5)",
     "tabs-deck": "all slides as data: URIs, one per tab — navigation with no round trip",
-    "slider-deck": "Slider picks a data: URI slide from the data model — the target design",
+    "slider-deck": "Slider picks a data: URI slide from the data model — ❌ in GE (no dynamic paths)",
+    "chips-deck": "numbered chips whose values ARE the slides; Image = formatString of the selection",
+    "chips-deck-bind": "same chips; Image url bound straight to the selection path (no formatString)",
+    "thumbs-modal": "3×3 thumbnail grid; tap a thumbnail to open that slide in a Modal",
 }
 
 
@@ -151,6 +154,46 @@ def slider_deck() -> list[dict]:
                  model)
 
 
+def _chips_deck(name: str, url: dict, how: str) -> list[dict]:
+    """The slider can't choose a data-model path, but a ChoicePicker writes its option VALUE.
+    So each chip's value is the slide's data: URI, and the Image reads the selection back."""
+    uris = [data_uri(f) for f in slide_files()]
+    return _card(name, name, f"Tap a number. The slide below should switch with no round trip ({how}).",
+                 [{"id": "pager", "component": "ChoicePicker", "label": "Slide", "variant": "mutuallyExclusive",
+                   "displayStyle": "chips", "value": {"path": "/current"},
+                   "options": [{"label": str(i), "value": u} for i, u in enumerate(uris, start=1)]},
+                  _image("img", url)],
+                 {"current": [uris[0]]})
+
+
+def chips_deck() -> list[dict]:
+    # /current is a one-item string array; formatString should stringify it to the URI itself.
+    return _chips_deck("chips-deck", _fmt("${/current}"), "url = formatString ${/current}")
+
+
+def chips_deck_bind() -> list[dict]:
+    return _chips_deck("chips-deck-bind", {"path": "/current"}, "url bound to /current")
+
+
+def thumbs_modal() -> list[dict]:
+    files = slide_files()
+    rows, nested = [], []
+    for r in range(0, len(files), 3):
+        row_id = f"row{r // 3 + 1}"
+        rows.append({"id": row_id, "component": "Row", "align": "center", "justify": "start",
+                     "children": [f"m{i}" for i in range(r + 1, min(r + 3, len(files)) + 1)]})
+    for i, f in enumerate(files, start=1):
+        uri = data_uri(f)
+        nested += [
+            {"id": f"m{i}", "component": "Modal", "trigger": f"t{i}", "content": f"c{i}", "weight": 1},
+            {**_image(f"t{i}", uri), "variant": "smallFeature"},
+            {"id": f"c{i}", "component": "Column", "align": "stretch", "children": [f"ch{i}", f"ci{i}"]},
+            _text(f"ch{i}", f"Slide {i} of {len(files)}", "h5"),
+            _image(f"ci{i}", uri),
+        ]
+    return _card("thumbs-modal", "thumbs-modal", "Tap a thumbnail to open that slide.", rows, nested=nested)
+
+
 BUILDERS = {
     "help": help_card,
     "img-data-tiny": img_data_tiny,
@@ -160,6 +203,9 @@ BUILDERS = {
     "slider-gstatic": slider_gstatic,
     "tabs-deck": tabs_deck,
     "slider-deck": slider_deck,
+    "chips-deck": chips_deck,
+    "chips-deck-bind": chips_deck_bind,
+    "thumbs-modal": thumbs_modal,
 }
 
 

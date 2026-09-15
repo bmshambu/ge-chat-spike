@@ -45,6 +45,7 @@ class TestEveryProbe:
         for c in comps:
             refs += c.get("children", []) + ([c["child"]] if "child" in c else [])
             refs += [t["child"] for t in c.get("tabs", [])]
+            refs += [c[k] for k in ("trigger", "content") if c["component"] == "Modal"]
         assert set(refs) <= set(ids)
         assert set(ids) - set(refs) == {"root"}  # nothing orphaned
 
@@ -88,6 +89,27 @@ def test_tabs_deck_one_image_per_tab():
 def test_slider_deck_model_holds_every_slide():
     model = _model(probe.slider_deck())
     assert all(model[f"s{i}"].startswith("data:image/jpeg") for i in range(1, 10))
+
+
+@pytest.mark.parametrize("build", [probe.chips_deck, probe.chips_deck_bind])
+def test_chips_deck_values_are_slides_and_seed_first(build):
+    msgs = build()
+    picker = next(c for c in _components(msgs) if c["component"] == "ChoicePicker")
+    values = [o["value"] for o in picker["options"]]
+    assert [o["label"] for o in picker["options"]] == [str(i) for i in range(1, 10)]
+    assert all(v.startswith("data:image/jpeg") for v in values)
+    assert picker["value"] == {"path": "/current"}  # flat path
+    assert _model(msgs) == {"current": [values[0]]}  # string array, per schema
+
+
+def test_thumbs_modal_nine_modals_each_opens_its_slide():
+    comps = {c["id"]: c for c in _components(probe.thumbs_modal())}
+    modals = [c for c in comps.values() if c["component"] == "Modal"]
+    assert len(modals) == 9
+    for i in range(1, 10):
+        m = comps[f"m{i}"]
+        assert comps[m["trigger"]]["url"] == comps[f"ci{i}"]["url"]
+        assert f"m{i}" in comps[f"row{(i - 1) // 3 + 1}"]["children"]
 
 
 @pytest.mark.parametrize("typed,expected", [
