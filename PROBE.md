@@ -115,6 +115,20 @@ the card is dropped with no error.
   size. Thumbnail grid + Modal splits cleanly; chips only work for small decks or small images.
 - Untested: whether a reply has a ceiling above 1.66 MB (matters for image-heavy real slides).
 
+Round 5 — whole-reply ceiling and a realistic heavy deck (pending):
+
+| probe | what it isolates | result |
+|---|---|---|
+| `reply-3mb` | one card, ~3 MB reply, every part ~500 KB, visible "part k of n" per part | |
+| `reply-6mb` | same, ~6 MB | |
+| `reply-12mb` | same, ~12 MB | |
+| `heavy-60` | 60 photo slides at 1200 px + thumbnails, packed into ≤ ~500 KB parts | |
+
+For each: does the card render, do **all** "part k of n" lines show (a gap = parts dropped
+mid-reply), how long until it appears, and does the chat stay responsive after scrolling back?
+For `heavy-60` also open a few slides (e.g. 1, 30, 60) and check the badge.
+If a card is dropped, do the F12 → Network `streamAssist` check above.
+
 Reading it: `split-60` ✅ → limit is **per DataPart**, chunk the payload. `surfaces-60` ✅ but
 `split-60` ❌ → limit is **per surface**. Both ❌ → limit is **per reply**; the `size-*` rows give
 the budget, and 60 slides need smaller images or more than one reply.

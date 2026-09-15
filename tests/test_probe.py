@@ -172,6 +172,39 @@ def test_split_60_one_surface_small_parts_head_last():
     assert sum(c["component"] == "Modal" for c in comps) == 60
 
 
+def _updates(msgs):
+    return [m for m in msgs if "updateComponents" in m]
+
+
+@pytest.mark.parametrize("mb", probe.REPLY_PROBES_MB)
+def test_reply_probe_parts_under_budget_total_on_target(mb):
+    msgs = probe.reply_probe(mb)
+    sizes = [len(json.dumps(m)) / 1024 for m in _updates(msgs)]
+    assert max(sizes) <= probe.PART_KB + 1
+    assert abs(sum(sizes) / 1024 - mb) < probe.PART_KB / 1024
+    head = _updates(msgs)[-1]["updateComponents"]["components"]
+    n = len(sizes) - 1
+    assert next(c for c in head if c["id"] == "col")["children"][2:] == [f"r{k}" for k in range(1, n + 1)]
+
+
+def test_heavy_60_assets_and_chunking():
+    assert len(list(probe.HEAVY60.glob("slide-*.jpg"))) == 60
+    assert len(list(probe.HEAVY60.glob("thumb-*.jpg"))) == 60
+    msgs = probe.heavy_60()
+    sizes = [len(json.dumps(m)) / 1024 for m in _updates(msgs)]
+    assert max(sizes) <= probe.PART_KB * 1.1  # only a single oversized slide could exceed
+    assert any(c["id"] == "root" for c in _updates(msgs)[-1]["updateComponents"]["components"])
+    (comps,) = _by_surface(msgs).values()
+    assert sum(c["component"] == "Modal" for c in comps) == 60
+
+
+def test_pack_never_splits_a_group_and_respects_limit():
+    groups = [[{"id": f"g{i}", "pad": "x" * 300}] for i in range(10)]
+    parts = probe._pack(groups, limit_kb=1)  # ~310 B each → 3 per part
+    assert [c for p in parts for c in p] == [c for g in groups for c in g]
+    assert all(len(json.dumps(p)) <= 1024 for p in parts)
+
+
 def test_surfaces_60_five_cards_of_twelve():
     surfaces = _by_surface(probe.surfaces_60())
     assert len(surfaces) == 5

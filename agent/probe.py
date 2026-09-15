@@ -6,6 +6,7 @@ payload that blanks one card cannot hide a pass in another.
 """
 import base64
 import json
+import math
 import uuid
 from pathlib import Path
 
@@ -13,7 +14,9 @@ CATALOG_BASIC = "https://a2ui.org/specification/v0_9/catalogs/basic/catalog.json
 ASSETS = Path(__file__).parent / "assets"
 GSTATIC = "https://www.gstatic.com/webp/gallery"  # 1.jpg … 5.jpg exist (checked)
 GSTATIC_COUNT = 5
-SIZE_PROBES_KB = (600, 900, 1200)  # round 4: ~400 KB rendered, 1.4 MB dropped
+SIZE_PROBES_KB = (600, 900, 1200)  # round 4: 900 KB part rendered, 1.2 MB part dropped
+REPLY_PROBES_MB = (3, 6, 12)       # round 5: is there a whole-reply ceiling?
+PART_KB = 500                      # per-DataPart budget for chunked probes (limit ~1 MB)
 
 
 # ── assets ───────────────────────────────────────────────────────────────────
@@ -93,9 +96,13 @@ TRIGGERS = {
     "thumbs-modal-60": "60 thumbnails in one grid — ❌ in GE (card dropped, ~1.7 MB)",
     "tabs-thumbs-60": "60 thumbnails in tabs of 12 — ❌ in GE (card dropped, ~1.7 MB)",
     "chips-deck-60": "60 chips switching one slide — ❌ in GE (card dropped, ~1.4 MB)",
-    **{f"size-{kb}": f"one part padded to ~{kb} KB — where is the ceiling?" for kb in SIZE_PROBES_KB},
-    "split-60": "60 thumbnails, one card, sent as many ~170 KB parts — is the limit per part?",
-    "surfaces-60": "60 thumbnails as 5 cards of 12 in one reply — is the limit per card?",
+    **{f"size-{kb}": f"one part padded to ~{kb} KB" + (" — ❌ in GE" if kb > 900 else " — ✅ in GE")
+       for kb in SIZE_PROBES_KB},
+    "split-60": "60 thumbnails, one card, ≤ 175 KB parts — ✅ in GE (limit is per part)",
+    "surfaces-60": "60 thumbnails as 5 cards of 12 in one reply — ✅ in GE",
+    **{f"reply-{mb}mb": f"one card, ~{mb} MB reply in ~{PART_KB} KB parts — is there a reply ceiling?"
+       for mb in REPLY_PROBES_MB},
+    "heavy-60": "60 photo-heavy 1200 px slides, chunked — realistic worst case",
 }
 
 
@@ -219,12 +226,17 @@ def thumbs_modal() -> list[dict]:
 # ── 60-slide scale tests (assets/deck60, each slide stamped "N / 60") ─────────
 
 DECK60 = ASSETS / "deck60"
+HEAVY60 = ASSETS / "heavy60"
+
+
+def _deck_items(folder: Path) -> list[tuple[int, str, str]]:
+    slides = sorted(folder.glob("slide-*.jpg"))
+    thumbs = sorted(folder.glob("thumb-*.jpg"))
+    return [(n, data_uri(t), data_uri(s)) for n, (t, s) in enumerate(zip(thumbs, slides), start=1)]
 
 
 def deck60_items() -> list[tuple[int, str, str]]:
-    slides = sorted(DECK60.glob("slide-*.jpg"))
-    thumbs = sorted(DECK60.glob("thumb-*.jpg"))
-    return [(n, data_uri(t), data_uri(s)) for n, (t, s) in enumerate(zip(thumbs, slides), start=1)]
+    return _deck_items(DECK60)
 
 
 def thumbs_modal_60() -> list[dict]:
@@ -263,7 +275,18 @@ def chips_deck_60() -> list[dict]:
 # silently, while thumbs-modal (~400 KB) renders. These find where the limit sits and
 # whether it applies per DataPart, per surface or per whole reply.
 
-SPLIT_SLIDES_PER_PART = 6   # ~170 KB per updateComponents part
+def _pack(groups: list[list[dict]], limit_kb: float) -> list[list[dict]]:
+    """Greedily pack component groups (one group per slide) into parts of ≤ limit_kb of JSON.
+    A group is never split; a single oversized group gets a part of its own."""
+    parts, current, size = [], [], 0
+    for group in groups:
+        g = len(json.dumps(group))
+        if current and size + g > limit_kb * 1024:
+            parts.append(current)
+            current, size = [], 0
+        current += group
+        size += g
+    return parts + ([current] if current else [])
 
 
 def size_probe(kb: int) -> list[dict]:
@@ -279,20 +302,53 @@ def size_probe(kb: int) -> list[dict]:
     return msgs
 
 
-def split_60() -> list[dict]:
-    """thumbs-modal-60 as ONE surface but many small updateComponents parts: slide components
-    first (6 slides per part), then the card skeleton that references them."""
-    items = deck60_items()
+def _split_thumbs(name: str, items: list[tuple[int, str, str]], part_kb: float, what: str) -> list[dict]:
+    """A thumbnail-grid deck as ONE surface sent in many small updateComponents parts:
+    slide components first (packed to ≤ part_kb), then the card skeleton that references them."""
     rows, nested = _thumb_grid(items, len(items))
-    sid = f"split-60-{uuid.uuid4().hex[:12]}"
     per_slide = len(nested) // len(items)
-    step = per_slide * SPLIT_SLIDES_PER_PART
-    parts = [nested[i:i + step] for i in range(0, len(nested), step)]
-    head = _card_head("split-60", f"60 thumbnails, one surface, sent in {len(parts) + 1} parts "
-                                  f"of ≤ ~{SPLIT_SLIDES_PER_PART} slides each. Tap one to open it.", rows)
+    parts = _pack([nested[i:i + per_slide] for i in range(0, len(nested), per_slide)], part_kb)
+    total_kb = _kb([t for _, t, _ in items] + [s for _, _, s in items])
+    head = _card_head(name, f"{len(items)} {what}, one card, sent in {len(parts) + 1} parts of ≤ ~{part_kb:.0f} KB "
+                            f"(~{total_kb / 1024:.1f} MB of images). Tap a thumbnail to open it.", rows)
+    sid = f"{name}-{uuid.uuid4().hex[:12]}"
     msgs = [{"version": "v0.9", "createSurface": {"surfaceId": sid, "catalogId": CATALOG_BASIC,
                                                   "sendDataModel": False}}]
     msgs += [{"version": "v0.9", "updateComponents": {"surfaceId": sid, "components": p}} for p in [*parts, head]]
+    return msgs
+
+
+def split_60() -> list[dict]:
+    """thumbs-modal-60 in ≤ ~175 KB parts (round 4 ✅)."""
+    return _split_thumbs("split-60", deck60_items(), 175, "text slides")
+
+
+def heavy_60() -> list[dict]:
+    """60 photo-heavy 1200 px slides — the realistic worst case — chunked to PART_KB."""
+    return _split_thumbs("heavy-60", _deck_items(HEAVY60), PART_KB, "photo slides at 1200 px")
+
+
+def reply_probe(mb: int) -> list[dict]:
+    """One card whose reply totals ~mb MB, every part ~PART_KB (safely under the per-part limit).
+    Each part carries a visible 'part k of n' line plus invisible padding, so a missing part shows."""
+    name = f"reply-{mb}mb"
+    sid = f"{name}-{uuid.uuid4().hex[:12]}"
+    n = math.ceil(mb * 1024 / PART_KB)
+    tiny = data_uri(ASSETS / "tiny.png")
+    msgs = [{"version": "v0.9", "createSurface": {"surfaceId": sid, "catalogId": CATALOG_BASIC,
+                                                  "sendDataModel": False}}]
+    for k in range(1, n + 1):
+        img = {**_image(f"i{k}", tiny), "variant": "icon", "description": ""}
+        msg = {"version": "v0.9", "updateComponents": {"surfaceId": sid, "components": [
+            {"id": f"r{k}", "component": "Row", "align": "center", "justify": "start", "children": [f"i{k}", f"l{k}"]},
+            img,
+            _text(f"l{k}", f"part {k} of {n} arrived", "caption"),
+        ]}}
+        img["description"] = "x" * max(0, PART_KB * 1024 - len(json.dumps(msg)))
+        msgs.append(msg)
+    head = _card_head(name, f"{n} parts of ~{PART_KB} KB (~{mb} MB reply). Every 'part k of {n}' line must show.", [])
+    head[1]["children"] += [f"r{k}" for k in range(1, n + 1)]  # head[1] is the card's Column
+    msgs.append({"version": "v0.9", "updateComponents": {"surfaceId": sid, "components": head}})
     return msgs
 
 
@@ -327,6 +383,8 @@ BUILDERS = {
     **{f"size-{kb}": (lambda kb=kb: size_probe(kb)) for kb in SIZE_PROBES_KB},
     "split-60": split_60,
     "surfaces-60": surfaces_60,
+    **{f"reply-{mb}mb": (lambda mb=mb: reply_probe(mb)) for mb in REPLY_PROBES_MB},
+    "heavy-60": heavy_60,
 }
 
 
